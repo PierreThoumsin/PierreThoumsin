@@ -1,8 +1,8 @@
 - 👋  Hi, I’m @PierreThoumsin
 - 👀  I’m interested in Fullstack and Front dev
-- 🌱  I’m currently learning @EPITECH in Coding@cademy
+- 🌱  I learned @EPITECH in Coding@cademy
 - 💞️  I’m looking to collaborate on my Student Project
-- 📫  How to reach me ? IZI men : pierre.thoumsin@epitech.eu
+- 📫  How to reach me ? IZI mates : pierre.thoumsin@epitech.eu
 
 <!---
 PierreThoumsin/PierreThoumsin is a ✨ special ✨ repository because its `README.md` (this file) appears on your GitHub profile.
