@@ -1,0 +1,114 @@
+# =============================================================================
+# check-files.yml : contrôle automatique des FICHIERS de chaque Pull Request.
+#
+# À QUOI ÇA SERT
+#   check-pr.yml vérifie la forme de la PR (branche, titre, description).
+#   Ce workflow-ci vérifie le contenu du dépôt tel qu'il serait après la fusion :
+#   les règles mécaniques des conventions et l'absence de secrets.
+#
+# CE QUE ÇA CONTRÔLE (4 "jobs" = 4 voyants dans la PR)
+#   1. Noms de fichiers  : kebab-case anglais (conventions, section 2)
+#   2. En-têtes YAML     : titre, statut, mis-a-jour dans docs/ (section 3)
+#   3. Émojis des README : un émoji en tête de chaque titre # et ## (section 4)
+#   4. Secrets           : mots de passe, clés d'API, jetons (section 7),
+#                          avec l'outil gratuit gitleaks, sur tout l'historique
+#
+# Les 3 premiers contrôles sont écrits dans .github/scripts/check-files.py,
+# que tu peux aussi lancer en local (voir l'en-tête de ce script).
+#
+# CE QUE ÇA NE FAIT PAS
+#   - Ça ne repère pas une donnée d'entreprise réelle (nom de client, chiffre
+#     d'affaires, nom de salarié) : l'anonymisation reste à ta relecture.
+#   - Ça ne contrôle pas les fichiers ignorés par Git (dossier private/).
+#
+# OÙ VOIR LE RÉSULTAT
+#   Dans la PR, zone "Checks", puis "Details" en cas d'échec. Les erreurs sont
+#   aussi affichées à côté du fichier concerné, dans l'onglet "Files changed".
+# =============================================================================
+
+name: Check Files
+
+# QUAND le workflow se lance : à la création de la PR, à chaque nouveau push
+# sur sa branche, et à sa réouverture. Pas sur "edited" : modifier le titre
+# ou la description ne change aucun fichier.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# DROITS donnés aux jobs : lecture du code seulement, rien d'autre.
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # JOB 1 : noms de fichiers et de dossiers en kebab-case anglais
+  # ---------------------------------------------------------------------------
+  file-names:
+    name: Noms de fichiers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer le code de la PR
+        uses: actions/checkout@v5
+      - name: Vérifier les noms
+        run: python3 .github/scripts/check-files.py names
+
+  # ---------------------------------------------------------------------------
+  # JOB 2 : en-tête YAML des documents de référence (docs/, hors README.md)
+  # ---------------------------------------------------------------------------
+  yaml-headers:
+    name: En-têtes YAML
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer le code de la PR
+        uses: actions/checkout@v5
+      - name: Vérifier les en-têtes
+        run: python3 .github/scripts/check-files.py headers
+
+  # ---------------------------------------------------------------------------
+  # JOB 3 : émojis en tête des titres # et ## de chaque README.md
+  # ---------------------------------------------------------------------------
+  readme-emojis:
+    name: Émojis des README
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer le code de la PR
+        uses: actions/checkout@v5
+      - name: Vérifier les titres
+        run: python3 .github/scripts/check-files.py readmes
+
+  # ---------------------------------------------------------------------------
+  # JOB 4 : aucun secret dans l'historique (dépôt public : tout est visible)
+  #
+  # gitleaks est téléchargé dans une version FIXE, et son empreinte (sha256)
+  # est vérifiée : si le fichier téléchargé a été modifié, le job s'arrête.
+  # Pour changer de version : mettre à jour GITLEAKS_VERSION et GITLEAKS_SHA256
+  # (empreinte "linux_x64" du fichier checksums.txt de la version choisie).
+  # ---------------------------------------------------------------------------
+  secrets:
+    name: Secrets
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: 8.21.2
+      GITLEAKS_SHA256: 5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba
+    steps:
+      - name: Récupérer tout l'historique
+        uses: actions/checkout@v5
+        with:
+          # 0 = tous les commits, pas seulement le dernier : un secret ajouté
+          # puis supprimé reste lisible dans l'historique public.
+          fetch-depth: 0
+      - name: Installer gitleaks
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSLf -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+      - name: Chercher des secrets
+        # --redact : si un secret est trouvé, il est masqué dans le journal,
+        # qui est lui aussi public.
+        run: |
+          if ! "$RUNNER_TEMP/gitleaks" git --redact --no-banner --verbose .; then
+            echo "::error::Un secret a été trouvé. NE FUSIONNE PAS : supprime-le de la branche, puis change le mot de passe ou la clé concernée, car il a déjà été publié."
+            exit 1
+          fi
