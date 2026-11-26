@@ -22,9 +22,9 @@
 #   4. Cohérence des règles   : tableaux des conventions intacts, modèle de PR cohérent
 #
 # CE QUE ÇA NE FAIT PAS
-#   - Ça ne bloque pas le merge tant que le dépôt est privé sur un compte gratuit :
-#     un voyant rouge est un avertissement, pas un verrou. Pour bloquer, il faut
-#     GitHub Pro (ou un dépôt public) + une règle "status checks obligatoires".
+#   - Ça ne bloque rien à lui seul : c'est le ruleset "protect-main" du dépôt
+#     (Settings → Rules) qui rend ces 5 voyants obligatoires avant la fusion.
+#   - Ça ne contrôle pas les fichiers : c'est le rôle de check-files.yml.
 #   - Ça ne vérifie pas que le texte est écrit en français : ça reste à ta relecture.
 #
 # OÙ VOIR LE RÉSULTAT
