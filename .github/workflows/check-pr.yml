@@ -78,7 +78,7 @@ jobs:
     steps:
       # Télécharge uniquement docs/conventions.md, tel qu'il est sur main, dans le dossier base/.
       - name: Récupérer les conventions de main
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: base
@@ -89,7 +89,7 @@ jobs:
       # Version de la PR, dans le dossier pr/. Elle ne sert QUE si main n'a encore
       # aucun marqueur (c'est-à-dire pour la PR qui introduit ce système).
       - name: Récupérer les conventions de la PR (secours)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: pr
           sparse-checkout: docs/conventions.md
@@ -337,7 +337,7 @@ jobs:
       contents: read
     steps:
       - name: Récupérer les fichiers de la PR
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           sparse-checkout: |
             docs/conventions.md
