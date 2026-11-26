@@ -1,0 +1,402 @@
+# =============================================================================
+# check-pr.yml : contrôle automatique de chaque Pull Request (PR) sur GitHub.
+#
+# À QUOI ÇA SERT
+#   Vérifier que chaque PR respecte les conventions du projet AVANT que tu la
+#   fusionnes. Avec la fusion en "squash", le titre et la description de la PR
+#   deviennent le commit final dans `main` : c'est donc eux qu'on surveille.
+#
+# D'OÙ VIENNENT LES RÈGLES
+#   - Les LISTES (types autorisés, sections de description) sont lues dans
+#     docs/conventions.md, entre les marqueurs <!-- ci:types --> et
+#     <!-- ci:pr-sections -->. Pour ajouter un type, on modifie le tableau des
+#     conventions : ce fichier-ci n'a pas à changer.
+#   - Les FORMATS (kebab-case, "type(portée): description", 72 caractères)
+#     sont écrits ici, car ils ne se déduisent pas d'un tableau.
+#
+# CE QUE ÇA CONTRÔLE (5 "jobs" = 5 voyants dans la PR)
+#   0. Règles des conventions : lit les listes dans docs/conventions.md de main
+#   1. Nom de branche         : <type>/<description-courte> en kebab-case
+#   2. Titre de PR            : <type>(<portée optionnelle>): <description>, 72 car. max
+#   3. Description de PR      : sections obligatoires présentes et remplies
+#   4. Cohérence des règles   : tableaux des conventions intacts, modèle de PR cohérent
+#
+# CE QUE ÇA NE FAIT PAS
+#   - Ça ne bloque pas le merge tant que le dépôt est privé sur un compte gratuit :
+#     un voyant rouge est un avertissement, pas un verrou. Pour bloquer, il faut
+#     GitHub Pro (ou un dépôt public) + une règle "status checks obligatoires".
+#   - Ça ne vérifie pas que le texte est écrit en français : ça reste à ta relecture.
+#
+# OÙ VOIR LE RÉSULTAT
+#   Dans la PR, en bas : la zone "Checks". En cas d'échec, clique sur "Details"
+#   pour lire le message d'erreur (les lignes qui commencent par ::error:: sont
+#   affichées en rouge par GitHub).
+# =============================================================================
+
+# Nom affiché dans l'onglet "Actions" du dépôt.
+name: Check Pull Request
+
+# QUAND le workflow se lance.
+on:
+  pull_request:
+    # opened      : à la création de la PR
+    # edited      : quand tu modifies le titre ou la description
+    # synchronize : à chaque nouveau push sur la branche de la PR
+    #               (indispensable si un jour ces checks deviennent obligatoires :
+    #                GitHub les attend sur chaque nouveau commit)
+    # reopened    : quand une PR fermée est rouverte
+    types: [opened, edited, synchronize, reopened]
+
+# DROITS donnés par défaut aux jobs sur le dépôt : aucun.
+# Seuls les jobs qui doivent lire des fichiers (0 et 4) reçoivent "contents: read".
+# Principe : moins de droits = moins de risques.
+permissions: {}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # JOB 0 : lire les listes de règles dans docs/conventions.md
+  #
+  # SÉCURITÉ : on lit la version de `main` (la base de la PR), PAS celle de la PR.
+  # Sinon, une PR pourrait assouplir les règles (ajouter un type bidon) et en
+  # profiter dans la même PR. Une nouvelle règle ne s'applique donc qu'une fois
+  # fusionnée par le dirigeant.
+  # Les jobs 1 à 3 reçoivent ces listes via "outputs" (sorties du job).
+  # ---------------------------------------------------------------------------
+  rules:
+    name: Règles des conventions
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      # Ex. "feat|fix|docs|..." : le "|" veut dire "ou" dans une expression régulière.
+      types: ${{ steps.read.outputs.types }}
+      # Ex. "OBJECT SUMMARY" : sections obligatoires, séparées par des espaces.
+      required: ${{ steps.read.outputs.required }}
+      # Ex. "OBJECT|SUMMARY|TODO|..." : toutes les sections autorisées.
+      allowed: ${{ steps.read.outputs.allowed }}
+    steps:
+      # Télécharge uniquement docs/conventions.md, tel qu'il est sur main, dans le dossier base/.
+      - name: Récupérer les conventions de main
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          sparse-checkout: docs/conventions.md
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Version de la PR, dans le dossier pr/. Elle ne sert QUE si main n'a encore
+      # aucun marqueur (c'est-à-dire pour la PR qui introduit ce système).
+      - name: Récupérer les conventions de la PR (secours)
+        uses: actions/checkout@v5
+        with:
+          path: pr
+          sparse-checkout: docs/conventions.md
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Extraire les listes des tableaux
+        id: read
+        shell: bash
+        run: |
+          file=base/docs/conventions.md
+
+          # Cas unique de démarrage : si main ne contient encore aucun marqueur "<!-- ci:",
+          # on lit la version de la PR, avec un avertissement. Dès que les marqueurs sont
+          # sur main, c'est toujours main qui fait foi. (Le job 4 refuse toute PR qui
+          # supprimerait les marqueurs, donc ce secours ne peut pas être réactivé par erreur.)
+          if ! grep -q '<!-- ci:' "$file"; then
+            echo "::warning::Aucun marqueur dans les conventions de main : lecture exceptionnelle de la version de la PR."
+            file=pr/docs/conventions.md
+          fi
+
+          # block <nom> : affiche les lignes comprises entre <!-- ci:<nom> ... --> et <!-- /ci:<nom> -->.
+          block() {
+            awk -v b="$1" '
+              index($0, "<!-- /ci:" b " ") == 1 || $0 == "<!-- /ci:" b " -->" { inside = 0; next }
+              index($0, "<!-- ci:" b " ") == 1 || $0 == "<!-- ci:" b " -->" { inside = 1; next }
+              inside { print }
+            ' "$file"
+          }
+
+          # Types : lignes du tableau de la forme "| `feat` | ..." -> "feat".
+          # grep -oE garde le morceau qui correspond ; tr retire "|", "`" et les espaces.
+          # "|| true" évite l'arrêt du script si rien n'est trouvé (on le signale juste après).
+          types=$(block types | grep -oE '^\| *`[a-z]+`' | tr -d '|` ' | paste -sd '|' || true)
+
+          # Sections : lignes "| `## OBJECT:` | obligatoire | ..." -> "OBJECT obligatoire".
+          sections=$(block pr-sections | sed -nE 's/^\| *`## ([A-Z]+):` *\| *([a-z]+).*/\1 \2/p' || true)
+          required=$(awk '$2 == "obligatoire" { print $1 }' <<< "$sections" | paste -sd ' ' || true)
+          allowed=$(awk 'NF { print $1 }' <<< "$sections" | paste -sd '|' || true)
+
+          # Si un tableau ou un marqueur a été cassé, on échoue clairement
+          # plutôt que d'accepter n'importe quoi.
+          if [ -z "$types" ] || [ -z "$required" ] || [ -z "$allowed" ]; then
+            echo "::error::Impossible de lire les listes dans $file. Vérifie les marqueurs <!-- ci:types --> et <!-- ci:pr-sections --> et le format des lignes de tableau."
+            exit 1
+          fi
+
+          echo "Types autorisés      : ${types//|/, }"
+          echo "Sections obligatoires: $required"
+          echo "Sections autorisées  : ${allowed//|/, }"
+
+          # Transmet les listes aux autres jobs.
+          {
+            echo "types=$types"
+            echo "required=$required"
+            echo "allowed=$allowed"
+          } >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # JOB 1 : nom de la branche
+  # ---------------------------------------------------------------------------
+  branch-name:
+    name: Nom de branche
+    # Attend le job 0 pour récupérer la liste des types.
+    needs: rules
+    # Machine virtuelle Linux fournie par GitHub, détruite après le job.
+    runs-on: ubuntu-latest
+    # Si quelque chose bloque, le job est arrêté après 2 minutes.
+    timeout-minutes: 2
+    steps:
+      - name: Vérifier le format <type>/<description-courte>
+        shell: bash
+        env:
+          ALLOWED_TYPES: ${{ needs.rules.outputs.types }}
+          # github.head_ref = nom de la branche de la PR (ex. feat/ajout-auth).
+          # SÉCURITÉ : on passe la valeur par une variable d'environnement au lieu
+          # d'écrire ${{ ... }} directement dans le script. Sinon, un nom de branche
+          # piégé pourrait injecter et exécuter des commandes.
+          BRANCH_NAME: ${{ github.head_ref }}
+        run: |
+          # Expression régulière (regex) attendue, morceau par morceau :
+          #   ^                          début du texte
+          #   (${ALLOWED_TYPES}|claude)  un type autorisé, ou "claude"
+          #   /                          un slash
+          #   [a-z0-9]+                  un mot en minuscules/chiffres
+          #   (-[a-z0-9]+)*              suivi de "-mot" autant de fois que voulu (kebab-case)
+          #   $                          fin du texte
+          # "claude" est une exception : les sessions Claude dans le cloud créent
+          # automatiquement des branches claude/... et ne peuvent pas changer ce préfixe.
+          pattern="^(${ALLOWED_TYPES}|claude)/[a-z0-9]+(-[a-z0-9]+)*$"
+
+          # [[ texte =~ regex ]] teste si le texte respecte la regex ; "!" inverse le test.
+          if [[ ! "$BRANCH_NAME" =~ $pattern ]]; then
+            echo "::error::Nom de branche non conforme : '$BRANCH_NAME'"
+            echo "Format attendu : <type>/<description-courte> en kebab-case (ex. feat/ajout-auth, fix/export-csv)."
+            # ${ALLOWED_TYPES//|/, } remplace chaque "|" par ", " pour un affichage lisible.
+            echo "Types autorisés : ${ALLOWED_TYPES//|/, }, claude."
+            # exit 1 = échec du job = voyant rouge.
+            exit 1
+          fi
+          echo "Nom de branche valide : '$BRANCH_NAME'"
+
+  # ---------------------------------------------------------------------------
+  # JOB 2 : titre de la PR (format Conventional Commits)
+  # Avec la fusion en squash, ce titre devient le titre du commit dans main.
+  # ---------------------------------------------------------------------------
+  pr-title:
+    name: Titre de PR
+    needs: rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Vérifier le format Conventional Commits
+        shell: bash
+        env:
+          ALLOWED_TYPES: ${{ needs.rules.outputs.types }}
+          # Même règle de sécurité que pour le nom de branche : passage par variable.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # failed passe à 1 dès qu'une règle échoue. On vérifie toutes les règles
+          # avant de quitter, pour afficher toutes les erreurs d'un coup.
+          failed=0
+
+          # Regex attendue, morceau par morceau :
+          #   ^(${ALLOWED_TYPES})   un type autorisé (pas "claude" ici)
+          #   (\([a-z0-9-]+\))?     une portée optionnelle entre parenthèses, ex. (ci)
+          #   :                     deux-points puis UN espace
+          #   [^ ].*$               une description qui ne commence pas par un espace
+          # Exemples valides : "feat: ajouter l'agent comptable", "fix(ci): corriger le contrôle"
+          pattern="^(${ALLOWED_TYPES})(\([a-z0-9-]+\))?: [^ ].*$"
+          if [[ ! "$PR_TITLE" =~ $pattern ]]; then
+            echo "::error::Titre de PR non conforme : '$PR_TITLE'"
+            echo "Format attendu : <type>(<portée optionnelle>): <description en français>"
+            echo "Exemples : feat: ajouter l'agent comptable, fix(ci): corriger le contrôle des branches"
+            echo "Types autorisés : ${ALLOWED_TYPES//|/, }."
+            failed=1
+          fi
+
+          # Longueur maximale : 72 caractères, la limite habituelle d'un titre de commit.
+          # ${#PR_TITLE} = nombre de caractères du titre.
+          # Note : au squash, GitHub ajoute " (#numéro)" à la fin du titre.
+          if [ ${#PR_TITLE} -gt 72 ]; then
+            echo "::error::Titre de PR trop long : ${#PR_TITLE} caractères (72 max)."
+            failed=1
+          fi
+
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+          echo "Titre de PR valide : '$PR_TITLE'"
+
+  # ---------------------------------------------------------------------------
+  # JOB 3 : description de la PR
+  # Avec la fusion en squash (message "Pull request title and description"),
+  # cette description devient le corps du commit dans main.
+  # Sections obligatoires et autorisées : lues dans les conventions (job 0).
+  # ---------------------------------------------------------------------------
+  pr-description:
+    name: Description de PR
+    needs: rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Vérifier les sections de la description
+        shell: bash
+        env:
+          REQUIRED: ${{ needs.rules.outputs.required }}
+          ALLOWED: ${{ needs.rules.outputs.allowed }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Liste lisible pour les messages, ex. "## OBJECT:, ## SUMMARY:".
+          required_list=$(sed -E 's/([A-Z]+)/## \1:/g; s/ ##/, ##/g' <<< "$REQUIRED")
+
+          # L'éditeur web de GitHub termine souvent les lignes par un caractère
+          # invisible "\r". Sans ce nettoyage, une section vide pourrait être
+          # considérée comme remplie. tr -d '\r' supprime tous ces caractères.
+          body=$(printf '%s\n' "$PR_BODY" | tr -d '\r')
+
+          # Retire les commentaires HTML <!-- ... --> (y compris sur plusieurs lignes),
+          # comme les consignes du modèle de PR. Sinon, une section qui ne contient
+          # qu'une consigne serait considérée comme remplie.
+          body=$(perl -0pe 's/<!--.*?-->//gs' <<< "$body")
+          failed=0
+
+          # Description vide (ou seulement des espaces) : inutile d'aller plus loin.
+          if [ -z "$(tr -d '[:space:]' <<< "$body")" ]; then
+            echo "::error::La description de la PR est vide. Sections obligatoires : $required_list"
+            exit 1
+          fi
+
+          # Pour chaque section obligatoire, on vérifie qu'elle existe ET qu'elle
+          # contient du texte. "awk" lit la description ligne par ligne :
+          #   - quand il trouve la ligne "## OBJECT:", il entre dans la section
+          #     (le texte écrit sur la même ligne que le titre compte aussi) ;
+          #   - il s'arrête au titre "## " suivant ;
+          #   - s'il a vu au moins une ligne non vide entre les deux, c'est bon.
+          # Les lignes placées avant la première section (ex. les 2 lignes
+          # d'attribution ajoutées par Claude) sont simplement ignorées.
+          for name in $REQUIRED; do
+            if ! awk -v name="$name" '
+                index($0, "## " name ":") == 1 {
+                  inside = 1
+                  sub("^## " name ":", "")
+                  if ($0 ~ /[^[:space:]]/) found = 1
+                  next
+                }
+                inside && /^## / { exit }
+                inside && /[^[:space:]]/ { found = 1 }
+                END { exit !found }
+              ' <<< "$body"; then
+              echo "::error::Section obligatoire absente ou vide : ## $name:"
+              failed=1
+            fi
+          done
+
+          # Seuls les titres prévus dans les conventions sont autorisés. Ça refuse
+          # les fautes comme "## Summary:", "## SUMMARIZE:" ou "## NOTES:".
+          # Les sous-titres "### ..." restent libres (ils ne commencent pas par "## ").
+          #   grep -E '^## '  : garde les lignes qui commencent par "## "
+          #   grep -vE '...'  : retire celles qui sont autorisées ; il reste les intrus
+          #   || true         : évite une erreur quand il n'y a aucun intrus
+          unknown=$(grep -E '^## ' <<< "$body" | grep -vE "^## (${ALLOWED}):" || true)
+          if [ -n "$unknown" ]; then
+            echo "::error::Titre(s) de section non autorisé(s) :"
+            echo "$unknown"
+            echo "Titres autorisés : $(sed -E 's/([A-Z]+)/## \1:/g; s/\|/, /g' <<< "$ALLOWED")."
+            failed=1
+          fi
+
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+          echo "Description de PR valide."
+
+  # ---------------------------------------------------------------------------
+  # JOB 4 : cohérence des règles dans la PR
+  # - Les tableaux lus par la CI existent toujours dans docs/conventions.md
+  #   (marqueurs intacts, au moins une ligne).
+  # - Le modèle .github/template_pr.md propose toutes les sections
+  #   obligatoires, et aucun titre non prévu par les conventions.
+  # Ici on lit les fichiers dans la version de la PR : c'est leur cohérence qui®
+  # compte (une PR qui renomme une section doit modifier les deux fichiers).
+  # ---------------------------------------------------------------------------
+  pr-template:
+    name: Cohérence des règles
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - name: Récupérer les fichiers de la PR
+        uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            docs/conventions.md
+            .github/template_pr.md
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Comparer le modèle aux conventions
+        shell: bash
+        run: |
+          conventions=docs/conventions.md
+          template=.github/template_pr.md
+
+          # Même lecture du tableau des sections que dans le job 0.
+          sections=$(awk '
+              index($0, "<!-- /ci:pr-sections ") == 1 || $0 == "<!-- /ci:pr-sections -->" { inside = 0; next }
+              index($0, "<!-- ci:pr-sections ") == 1 || $0 == "<!-- ci:pr-sections -->" { inside = 1; next }
+              inside { print }
+            ' "$conventions" | sed -nE 's/^\| *`## ([A-Z]+):` *\| *([a-z]+).*/\1 \2/p' || true)
+          if [ -z "$sections" ]; then
+            echo "::error::Tableau des sections introuvable dans $conventions (marqueurs <!-- ci:pr-sections --> cassés ?)."
+            exit 1
+          fi
+
+          # Le tableau des types doit lui aussi rester lisible.
+          types=$(awk '
+              index($0, "<!-- /ci:types ") == 1 || $0 == "<!-- /ci:types -->" { inside = 0; next }
+              index($0, "<!-- ci:types ") == 1 || $0 == "<!-- ci:types -->" { inside = 1; next }
+              inside { print }
+            ' "$conventions" | grep -oE '^\| *`[a-z]+`' || true)
+          if [ -z "$types" ]; then
+            echo "::error::Tableau des types introuvable dans $conventions (marqueurs <!-- ci:types --> cassés ?)."
+            exit 1
+          fi
+          required=$(awk '$2 == "obligatoire" { print $1 }' <<< "$sections")
+          allowed=$(awk 'NF { print $1 }' <<< "$sections" | paste -sd '|')
+
+          if [ ! -f "$template" ]; then
+            echo "::error::Modèle $template introuvable."
+            exit 1
+          fi
+
+          # Titres réellement visibles dans le modèle (hors commentaires HTML).
+          headings=$(perl -0pe 's/<!--.*?-->//gs' "$template" | grep -E '^## ' || true)
+          failed=0
+
+          for name in $required; do
+            if ! grep -qE "^## ${name}:" <<< "$headings"; then
+              echo "::error::Le modèle ne propose pas la section obligatoire ## $name:"
+              failed=1
+            fi
+          done
+
+          unknown=$(grep -vE "^## (${allowed}):" <<< "$headings" | grep -E '^## ' || true)
+          if [ -n "$unknown" ]; then
+            echo "::error::Le modèle contient des titres absents des conventions :"
+            echo "$unknown"
+            failed=1
+          fi
+
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+          echo "Conventions lisibles par la CI et modèle de PR cohérent."
