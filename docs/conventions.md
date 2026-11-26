@@ -41,7 +41,7 @@ Un nom de fichier ou de dossier DOIT être :
 
 | Fichier | Raison |
 |---|---|
-| `README.md`, `CLAUDE.md`, `AGENTS.md` | noms imposés par GitHub, Claude Code et Codex |
+| `README.md`, `LICENSE`, `CLAUDE.md`, `AGENTS.md` | noms imposés par GitHub, Claude Code et Codex |
 | `SKILL.md`, `.github/…` et autres fichiers d'outils | format imposé par l'outil |
 | contenu de `private/` | données personnelles, jamais versionnées |
 
@@ -237,12 +237,19 @@ Vérifier automatiquement le format des Pull Requests avant leur fusion.
 
 ### Contrôle automatique
 
-Le workflow `.github/workflows/check-pr.yml` vérifie sur chaque PR le nom de la branche, le titre et la description.
+Deux workflows contrôlent chaque PR :
+
+- `.github/workflows/check-pr.yml` vérifie le nom de la branche, le titre et la description ;
+- `.github/workflows/check-files.yml` vérifie les fichiers : noms (section 2), en-têtes YAML (section 3),
+émojis des README (section 4) et absence de secrets (section 7).
+  
 Un contrôle rouge signale une règle non respectée : la PR DOIT être corrigée avant la fusion.
+Le ruleset `protect-main` du dépôt rend ces contrôles obligatoires : tant qu'un contrôle est rouge,
+GitHub bloque la fusion. Il interdit aussi tout push direct sur `main`.
 
 La liste des types (section 6) et celle des sections de description (ci-dessus) sont **lues directement dans ce
 document**, tel qu'il est sur `main`. Une nouvelle règle ne s'applique donc qu'une fois sa PR fusionnée.
-Le même workflow vérifie que le modèle `.github/template_pr.md` reste cohérent avec ces listes.
+`check-pr.yml` vérifie aussi que le modèle `.github/pull_request_template.md` reste cohérent avec ces listes.
 
 ## 6. Commits
 
@@ -323,6 +330,10 @@ au lieu de le présenter comme conforme.
 - Pièces d'identité, relevés bancaires, contrats non publics, données personnelles de salariés ou de clients :
   **uniquement dans `private/`**, jamais dans un commit.
 - Un agent qui rencontre une donnée sensible hors de `private/` DOIT le signaler avant tout commit.
+`check-pr.yml` vérifie aussi que le modèle `.github/pull_request_template.md` reste cohérent avec ces listes.
+Le contenu versionné DOIT rester générique et anonymisé ; les vraies données de l'entreprise vivent dans `private/`.
+- Le contrôle automatique des secrets ne repère que les mots de passe, clés et jetons. Il ne repère **pas** un nom
+  de client, un montant ou une donnée de salarié : l'anonymisation reste vérifiée à la relecture de chaque PR.
 
 ## 8. Faire évoluer ces conventions
 
@@ -335,3 +346,4 @@ au lieu de le présenter comme conforme.
     des lignes (`` | `valeur` | … ``) NE DOIVENT PAS être modifiés ;
   - les **formats** (kebab-case, `type(portée): description`, 72 caractères) sont écrits dans le workflow :
     toute modification de ces formats DOIT y être reportée dans la même Pull Request.
+- Le workflow `.github/workflows/check-files.yml` applique les règles mécaniques des sections 2, 3, 4 et 7.  Ces règles (exceptions de nommage, champs et statuts de l'en-tête, titres des README) sont écrites dans  `.github/scripts/check-files.py` : toute modification de ces sections DOIT y être reportée dans la même Pull Request.
