@@ -1,0 +1,7 @@
+# Données sensibles : tout le contenu de private/ est ignoré...
+/private/**
+# ...sauf les dossiers (pour que Git puisse y descendre)
+!/private/**/
+# ...et les fichiers de structure documentaire, sans aucune donnée sensible
+!/private/**/README.md
+!/private/**/.gitkeep
